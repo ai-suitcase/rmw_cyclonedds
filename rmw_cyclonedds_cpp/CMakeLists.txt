@@ -16,6 +16,12 @@ cmake_minimum_required(VERSION 3.5)
 
 project(rmw_cyclonedds_cpp)
 
+# Match optimized ROS distribution builds when this middleware is overlaid from source.
+# Preserve an explicit build type chosen by developers or cross-platform builds.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Build type" FORCE)
+endif()
+
 # Default to C++14
 if(NOT CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 14)
