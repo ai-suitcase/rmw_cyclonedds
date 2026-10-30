@@ -159,11 +159,36 @@ static void serialize_into_serdata_rmw_on_demand(serdata_rmw * d)
   (void)d;
 }
 
+struct serialized_view
+{
+  void * data;
+  size_t size;
+};
+
+static serialized_view get_serialized_view(const serdata_rmw * d)
+{
+#ifdef DDS_HAS_SHM
+  // A received chunk is immutable and remains owned by this serdata until its
+  // last reference is released. Read serialized bytes in place: copying them to
+  // m_data first adds a full-payload allocation/copy for every local reader.
+  // Do not borrow publisher chunks: publishing transfers their ownership to
+  // iceoryx and clears iox_chunk while network/history readers can still exist.
+  if (d->iox_subscriber && d->iox_chunk) {
+    const auto header = iceoryx_header_from_chunk(d->iox_chunk);
+    if (header->shm_data_state == IOX_CHUNK_CONTAINS_SERIALIZED_DATA) {
+      return {d->iox_chunk, header->data_size};
+    }
+  }
+#endif
+  serialize_into_serdata_rmw_on_demand(const_cast<serdata_rmw *>(d));
+  return {d->data(), d->size()};
+}
+
 static uint32_t serdata_rmw_size(const struct ddsi_serdata * dcmn)
 {
   auto d = static_cast<const serdata_rmw *>(dcmn);
-  serialize_into_serdata_rmw_on_demand(const_cast<serdata_rmw *>(d));
-  size_t size = d->size();
+  const auto view = get_serialized_view(d);
+  size_t size = view.size;
   uint32_t size_u32 = static_cast<uint32_t>(size);
   assert(size == size_u32);
   return size_u32;
@@ -310,8 +335,8 @@ static struct ddsi_serdata * serdata_rmw_to_untyped(const struct ddsi_serdata * 
 static void serdata_rmw_to_ser(const struct ddsi_serdata * dcmn, size_t off, size_t sz, void * buf)
 {
   auto d = static_cast<const serdata_rmw *>(dcmn);
-  serialize_into_serdata_rmw_on_demand(const_cast<serdata_rmw *>(d));
-  memcpy(buf, byte_offset(d->data(), off), sz);
+  const auto view = get_serialized_view(d);
+  memcpy(buf, byte_offset(view.data, off), sz);
 }
 
 static struct ddsi_serdata * serdata_rmw_to_ser_ref(
@@ -319,8 +344,8 @@ static struct ddsi_serdata * serdata_rmw_to_ser_ref(
   size_t sz, ddsrt_iovec_t * ref)
 {
   auto d = static_cast<const serdata_rmw *>(dcmn);
-  serialize_into_serdata_rmw_on_demand(const_cast<serdata_rmw *>(d));
-  ref->iov_base = byte_offset(d->data(), off);
+  const auto view = get_serialized_view(d);
+  ref->iov_base = byte_offset(view.data, off);
   ref->iov_len = (ddsrt_iov_len_t) sz;
   return ddsi_serdata_ref(d);
 }
@@ -349,8 +374,8 @@ static bool serdata_rmw_to_sample(
     if (d->kind != SDK_DATA) {
       /* ROS 2 doesn't do keys in a meaningful way yet */
     } else if (!type->is_request_header) {
-      serialize_into_serdata_rmw_on_demand(const_cast<serdata_rmw *>(d));
-      cycdeser sd(d->data(), d->size());
+      const auto view = get_serialized_view(d);
+      cycdeser sd(view.data, view.size);
       if (using_introspection_c_typesupport(type->type_support.typesupport_identifier_)) {
         auto typed_typesupport =
           static_cast<MessageTypeSupport_c *>(type->type_support.type_support_);
@@ -368,8 +393,8 @@ static bool serdata_rmw_to_sample(
         probably incompatible. */
       cdds_request_wrapper_t * const wrap = static_cast<cdds_request_wrapper_t *>(sample);
       auto prefix = [wrap](cycdeser & ser) {ser >> wrap->header.guid; ser >> wrap->header.seq;};
-      serialize_into_serdata_rmw_on_demand(const_cast<serdata_rmw *>(d));
-      cycdeser sd(d->data(), d->size());
+      const auto view = get_serialized_view(d);
+      cycdeser sd(view.data, view.size);
       if (using_introspection_c_typesupport(type->type_support.typesupport_identifier_)) {
         auto typed_typesupport =
           static_cast<MessageTypeSupport_c *>(type->type_support.type_support_);
@@ -423,8 +448,8 @@ static size_t serdata_rmw_print(
       /* ROS 2 doesn't do keys in a meaningful way yet */
       return static_cast<size_t>(snprintf(buf, bufsize, ":k:{}"));
     } else if (!type->is_request_header) {
-      serialize_into_serdata_rmw_on_demand(const_cast<serdata_rmw *>(d));
-      cycprint sd(buf, bufsize, d->data(), d->size());
+      const auto view = get_serialized_view(d);
+      cycprint sd(buf, bufsize, view.data, view.size);
       if (using_introspection_c_typesupport(type->type_support.typesupport_identifier_)) {
         auto typed_typesupport =
           static_cast<MessageTypeSupport_c *>(type->type_support.type_support_);
